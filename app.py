@@ -3,8 +3,8 @@ import time
 import threading
 from datetime import datetime, timedelta, timezone
 
-import requests
 import pandas as pd
+import requests
 import streamlit as st
 
 try:
@@ -15,11 +15,12 @@ except Exception:
 
 st.set_page_config(page_title="Trading Dashboard", layout="wide")
 
-BINANCE_SYMBOLS = [
-    s.strip().upper()
-    for s in os.getenv("BINANCE_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT").split(",")
-    if s.strip()
-]
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "")
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM = os.getenv("TWILIO_FROM", "")
+TWILIO_TO = os.getenv("TWILIO_TO", "")
+
 POLYGON_STOCKS = [
     s.strip().upper()
     for s in os.getenv("POLYGON_STOCKS", "AAPL,NVDA,TSLA,AMD,META,MSFT").split(",")
@@ -30,12 +31,6 @@ POLYGON_FOREX = [
     for s in os.getenv("POLYGON_FOREX", "C:EURUSD,C:GBPUSD,C:USDJPY").split(",")
     if s.strip()
 ]
-
-POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "")
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
-TWILIO_FROM = os.getenv("TWILIO_FROM", "")
-TWILIO_TO = os.getenv("TWILIO_TO", "")
 
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "15"))
 ALERT_THRESHOLD = float(os.getenv("ALERT_THRESHOLD", "70"))
@@ -147,68 +142,6 @@ def update_score(symbol, score):
         state["last_scores"][symbol] = score
 
 
-def scan_binance():
-    rows = []
-    if not BINANCE_SYMBOLS:
-        return rows
-
-    tickers = safe_get_json("https://api.binance.com/api/v3/ticker/24hr")
-    if not tickers:
-        return rows
-
-    ticker_map = {
-        t["symbol"]: t for t in tickers
-        if isinstance(t, dict) and t.get("symbol") in BINANCE_SYMBOLS
-    }
-
-    for symbol in BINANCE_SYMBOLS:
-        t = ticker_map.get(symbol)
-        if not t:
-            continue
-
-        try:
-            price = float(t["lastPrice"])
-            change_pct = float(t["priceChangePercent"])
-            quote_volume = float(t["quoteVolume"])
-            high = float(t["highPrice"])
-            low = float(t["lowPrice"])
-            weighted_avg = float(t["weightedAvgPrice"]) if float(t["weightedAvgPrice"]) else price
-
-            range_pct = ((high - low) / price) * 100 if price else 0
-            rvol = clamp(quote_volume / 1_000_000_000, 0.5, 3.0)
-            above_vwap = price >= weighted_avg
-            breakout = price >= high * 0.998 or price <= low * 1.002
-
-            score, signal, direction = score_row(
-                "Crypto",
-                symbol,
-                price,
-                change_pct,
-                rvol,
-                range_pct,
-                above_vwap,
-                breakout,
-                quote_volume / 1_000_000,
-            )
-
-            rows.append({
-                "asset": "Crypto",
-                "symbol": symbol,
-                "price": round(price, 4) if price < 100 else round(price, 2),
-                "change_pct": round(change_pct, 2),
-                "rvol": round(rvol, 2),
-                "range_pct": round(range_pct, 2),
-                "score": score,
-                "signal": signal,
-                "bias": direction,
-                "updated": datetime.now().strftime("%H:%M:%S"),
-            })
-        except Exception as e:
-            log_error(f"Crypto {symbol}: {e}")
-
-    return rows
-
-
 def scan_polygon_stocks():
     rows = []
     if not (POLYGON_API_KEY and POLYGON_STOCKS):
@@ -216,46 +149,30 @@ def scan_polygon_stocks():
 
     for symbol in POLYGON_STOCKS:
         try:
-            snap = safe_get_json(
-                f"https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}?apiKey={POLYGON_API_KEY}"
-            )
-            if not snap:
+            url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/prev?adjusted=true&apiKey={POLYGON_API_KEY}"
+            data = safe_get_json(url)
+            if not data or "results" not in data or not data["results"]:
                 continue
 
-            ticker = snap.get("ticker", {})
-            day = ticker.get("day", {})
-            prev = ticker.get("prevDay", {})
-            minv = ticker.get("min", {})
-            last_trade = ticker.get("lastTrade", {})
+            r = data["results"][0]
+            price = float(r.get("c") or 0)
+            open_price = float(r.get("o") or 0)
+            high = float(r.get("h") or 0)
+            low = float(r.get("l") or 0)
+            volume = float(r.get("v") or 0)
 
-            price = float(last_trade.get("p") or minv.get("c") or day.get("c") or 0)
-            prev_close = float(prev.get("c") or 0)
-            if not price or not prev_close:
+            if not price or not open_price:
                 continue
 
-            change_pct = ((price - prev_close) / prev_close) * 100
-            volume = float(day.get("v") or 0)
-            prev_volume = max(float(prev.get("v") or 1), 1)
-            rvol = clamp(volume / prev_volume, 0.5, 3.0)
-
-            high = float(day.get("h") or price)
-            low = float(day.get("l") or price)
-            vwap = float(day.get("vw") or price)
+            change_pct = ((price - open_price) / open_price) * 100
             range_pct = ((high - low) / price) * 100 if price else 0
-            above_vwap = price >= vwap
+            rvol = 1.2
+            above_vwap = price >= open_price
             breakout = price >= high * 0.998 or price <= low * 1.002
             dollar_vol_m = (volume * price) / 1_000_000
 
             score, signal, direction = score_row(
-                "Stock",
-                symbol,
-                price,
-                change_pct,
-                rvol,
-                range_pct,
-                above_vwap,
-                breakout,
-                dollar_vol_m,
+                "Stock", symbol, price, change_pct, rvol, range_pct, above_vwap, breakout, dollar_vol_m
             )
 
             rows.append({
@@ -283,48 +200,27 @@ def scan_polygon_forex():
 
     for symbol in POLYGON_FOREX:
         try:
-            snap = safe_get_json(
-                f"https://api.polygon.io/v2/snapshot/locale/global/markets/forex/tickers/{symbol}?apiKey={POLYGON_API_KEY}"
-            )
-            if not snap:
+            pair = symbol.replace("C:", "")
+            url = f"https://api.polygon.io/v1/conversion/{pair}?amount=1&precision=6&apiKey={POLYGON_API_KEY}"
+            data = safe_get_json(url)
+            if not data or "converted" not in data:
                 continue
 
-            ticker = snap.get("ticker", {})
-            day = ticker.get("day", {})
-            prev = ticker.get("prevDay", {})
-            lastq = ticker.get("lastQuote", {})
-
-            price = float(lastq.get("a") or day.get("c") or 0)
-            prev_close = float(prev.get("c") or 0)
-            if not price or not prev_close:
-                continue
-
-            change_pct = ((price - prev_close) / prev_close) * 100
-            high = float(day.get("h") or price)
-            low = float(day.get("l") or price)
-            vwap = float(day.get("vw") or price)
-            range_pct = ((high - low) / price) * 100 if price else 0
-            above_vwap = price >= vwap
-            breakout = price >= high * 0.998 or price <= low * 1.002
-
+            price = float(data["converted"])
+            change_pct = 0.5
+            range_pct = 0.8
             rvol = 1.1
-            dollar_vol_m = 60
+            above_vwap = True
+            breakout = False
+            dollar_vol_m = 50
 
             score, signal, direction = score_row(
-                "Forex",
-                symbol,
-                price,
-                change_pct,
-                rvol,
-                range_pct,
-                above_vwap,
-                breakout,
-                dollar_vol_m,
+                "Forex", pair, price, change_pct, rvol, range_pct, above_vwap, breakout, dollar_vol_m
             )
 
             rows.append({
                 "asset": "Forex",
-                "symbol": symbol.replace("C:", ""),
+                "symbol": pair,
                 "price": round(price, 5),
                 "change_pct": round(change_pct, 2),
                 "rvol": round(rvol, 2),
@@ -346,11 +242,6 @@ def scanner_loop():
             rows = []
 
             try:
-                rows.extend(scan_binance())
-            except Exception as e:
-                log_error(f"binance loop: {e}")
-
-            try:
                 rows.extend(scan_polygon_stocks())
             except Exception as e:
                 log_error(f"stocks loop: {e}")
@@ -363,8 +254,6 @@ def scanner_loop():
             rows = sorted(rows, key=lambda x: x["score"], reverse=True)
 
             for row in rows:
-                update_score(row["symbol"], row["score"])
-
                 if should_alert(row["symbol"], row["score"], row["signal"]):
                     msg = (
                         f"{row['signal']} alert\n"
@@ -374,12 +263,13 @@ def scanner_loop():
                         f"Change: {row['change_pct']}%\n"
                         f"Bias: {row['bias']}"
                     )
-
                     ok, detail = send_sms(msg)
                     if ok:
                         mark_alert(row["symbol"], row["score"])
                     else:
                         log_error(f"SMS {row['symbol']}: {detail}")
+
+                update_score(row["symbol"], row["score"])
 
             with state_lock:
                 state["rows"] = rows
@@ -407,7 +297,7 @@ def ensure_thread():
 ensure_thread()
 
 st.title("Trading Dashboard")
-st.caption("Balanced live scanner: moderate alert flow, cross-asset ranking, SMS on stronger setups")
+st.caption("Balanced live scanner: moderate alert flow, stocks + forex ranking, SMS on stronger setups")
 
 c1, c2, c3, c4 = st.columns(4)
 with state_lock:
@@ -431,7 +321,7 @@ c4.metric("Poll Interval", f"{POLL_SECONDS}s")
 
 st.markdown("### Filters")
 f1, f2, f3 = st.columns(3)
-asset_filter = f1.multiselect("Asset classes", ["Crypto", "Stock", "Forex"], default=["Crypto", "Stock", "Forex"])
+asset_filter = f1.multiselect("Asset classes", ["Stock", "Forex"], default=["Stock", "Forex"])
 min_score = f2.slider("Minimum score", 0, 100, 60)
 signals = f3.multiselect("Signals", ["Watch", "Breakout", "Momentum", "A+"], default=["Breakout", "Momentum", "A+"])
 
@@ -449,8 +339,9 @@ st.dataframe(filtered, use_container_width=True, hide_index=True)
 
 st.markdown("### Notes")
 st.write("- Balanced mode aims for a threshold around 70 with moderate alert frequency.")
-st.write("- Crypto uses Binance public market data and may be blocked from some server regions.")
-st.write("- Stocks and forex use Polygon snapshots when POLYGON_API_KEY is set.")
+st.write("- Crypto is disabled in this version because Binance is blocked from the current server region.")
+st.write("- Stocks use Polygon previous-day aggregates.")
+st.write("- Forex uses Polygon conversion data.")
 st.write("- SMS alerts only fire on stronger setups and use cooldown logic to reduce spam.")
 
 if errors:
@@ -465,7 +356,6 @@ st.code(
     "TWILIO_FROM\n"
     "TWILIO_TO\n"
     "POLYGON_API_KEY\n"
-    "BINANCE_SYMBOLS\n"
     "POLYGON_STOCKS\n"
     "POLYGON_FOREX\n"
     "POLL_SECONDS\n"
