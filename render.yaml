@@ -17,3 +17,15 @@ services:
         sync: false
       - key: POLYGON_API_KEY
         sync: false
+      - key: BINANCE_SYMBOLS
+        value: BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT
+      - key: POLYGON_STOCKS
+        value: AAPL,NVDA,TSLA,AMD,META,MSFT
+      - key: POLYGON_FOREX
+        value: C:EURUSD,C:GBPUSD,C:USDJPY
+      - key: POLL_SECONDS
+        value: "15"
+      - key: ALERT_THRESHOLD
+        value: "70"
+      - key: ALERT_COOLDOWN_MINUTES
+        value: "20"

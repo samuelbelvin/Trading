@@ -1,21 +1,13 @@
-# Trading Dashboard - Flattened GitHub Upload
+# Trading Dashboard - Balanced Upgrade
 
-Upload these files directly to the **root** of your GitHub repo.
+This version upgrades the deployment-safe starter into a balanced live scanner.
 
-Your repo should look like this:
-
-- render.yaml
-- app.py
-- requirements.txt
-- README.md
-- .env.example
-
-## Render Blueprint
-After uploading these files:
-
-1. Commit to `main`
-2. In Render, run **Manual Deploy -> Deploy latest commit**
-3. Add your secrets in Render under **Environment**
+## What it does
+- Polls Binance public market data for crypto
+- Polls Polygon snapshots for stocks and forex
+- Scores opportunities across crypto, stocks, and forex
+- Sends SMS alerts through Twilio on stronger setups
+- Exposes a Streamlit dashboard suitable for Render + iPad viewing
 
 ## Required environment variables
 - TWILIO_ACCOUNT_SID
@@ -24,5 +16,18 @@ After uploading these files:
 - TWILIO_TO
 - POLYGON_API_KEY
 
-This package is intentionally minimal so Render can start cleanly.
-Once it is live, the full scanner logic can be layered back in.
+## Optional environment variables
+- BINANCE_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT
+- POLYGON_STOCKS=AAPL,NVDA,TSLA,AMD,META,MSFT
+- POLYGON_FOREX=C:EURUSD,C:GBPUSD,C:USDJPY
+- POLL_SECONDS=15
+- ALERT_THRESHOLD=70
+- ALERT_COOLDOWN_MINUTES=20
+
+## Render start command
+Defined in render.yaml:
+streamlit run app.py --server.address 0.0.0.0 --server.port $PORT
+
+## Important
+This is a ranked-opportunity scanner, not an execution engine.
+It is designed to surface candidates with stronger conditions, not guarantee profitability.
