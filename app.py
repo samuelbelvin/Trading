@@ -302,7 +302,6 @@ try:
     rows.extend(scan_polygon_forex())
 except Exception as e:
     log_error(f"forex loop: {e}")
-
 def ensure_thread():
     with state_lock:
         if state["thread_started"]:
