@@ -1,256 +1,225 @@
-import os
+from __future__ import annotations
 from datetime import datetime
-
 import pandas as pd
-import requests
 import streamlit as st
 
-st.set_page_config(page_title="Trading Dashboard", layout="wide")
+from config import settings
+from execution.base import OrderRequest
+from execution.paper import PaperBroker
+from execution.alpaca_live import AlpacaLiveBroker
+from execution.oanda_live import OandaLiveBroker
+from services.market_data import fetch_multi_asset_rows
+from services.risk import check_risk
+from services.signals import tradable_rows, trade_side_from_row
 
-POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "").strip()
-POLL_SECONDS = int(os.getenv("POLL_SECONDS", "15"))
-ALERT_THRESHOLD = float(os.getenv("ALERT_THRESHOLD", "70"))
-ALERT_COOLDOWN_MINUTES = int(os.getenv("ALERT_COOLDOWN_MINUTES", "20"))
+st.set_page_config(page_title="Final Multi-Asset Trading Platform", layout="wide")
 
-POLYGON_STOCKS = [
-    s.strip().upper()
-    for s in os.getenv("POLYGON_STOCKS", "AAPL,NVDA,TSLA,AMD,META,MSFT").split(",")
-    if s.strip()
-]
-POLYGON_FOREX = [
-    s.strip().upper()
-    for s in os.getenv("POLYGON_FOREX", "C:EURUSD,C:GBPUSD,C:USDJPY").split(",")
-    if s.strip()
-]
+if "paper_broker" not in st.session_state:
+    st.session_state.paper_broker = PaperBroker()
+if "orders" not in st.session_state:
+    st.session_state.orders = []
+if "errors" not in st.session_state:
+    st.session_state.errors = []
+if "realized_daily_pnl_pct" not in st.session_state:
+    st.session_state.realized_daily_pnl_pct = 0.0
 
-DEFAULT_COLUMNS = [
-    "asset", "symbol", "price", "change_pct", "rvol",
-    "range_pct", "score", "signal", "bias", "updated"
-]
+alpaca = AlpacaLiveBroker(settings.alpaca_api_key, settings.alpaca_api_secret, settings.alpaca_base_url)
+oanda = OandaLiveBroker(settings.oanda_api_key, settings.oanda_account_id, settings.oanda_env)
 
+def get_broker(asset_class: str):
+    if settings.trading_mode == "paper":
+        return st.session_state.paper_broker
+    if asset_class == "forex" and settings.forex_execution_broker.lower() == "oanda":
+        return oanda
+    if asset_class in {"stock", "crypto"} and (
+        (asset_class == "stock" and settings.stock_execution_broker.lower() == "alpaca") or
+        (asset_class == "crypto" and settings.crypto_execution_broker.lower() == "alpaca")
+    ):
+        return alpaca
+    return st.session_state.paper_broker
 
-def clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
+@st.cache_data(ttl=settings.poll_seconds, show_spinner=False)
+def cached_market_rows():
+    return fetch_multi_asset_rows()
 
+st.title("Final Multi-Asset Trading Platform")
+st.caption("Forex through OANDA. Stocks and crypto through Alpaca. Paper mode is still the safest place to start.")
 
-def score_row(price: float, open_price: float, high: float, low: float, volume: float) -> tuple[float, str, str, float, float, bool, bool, float]:
-    change_pct = ((price - open_price) / open_price) * 100 if open_price else 0.0
-    range_pct = ((high - low) / price) * 100 if price else 0.0
-    rvol = 1.2
-    above_vwap = price >= open_price
-    breakout = price >= high * 0.998 or price <= low * 1.002 if high and low else False
-    dollar_vol_m = (volume * price) / 1_000_000 if volume and price else 0.0
-
-    score = 0.0
-    score += clamp(abs(change_pct) * 4, 0, 20)
-    score += clamp(rvol * 12, 0, 24)
-    score += clamp(range_pct * 3.5, 0, 18)
-    score += clamp(dollar_vol_m / 50, 0, 18)
-    score += 10 if above_vwap else 0
-    score += 10 if breakout else 0
-
-    signal = "Watch"
-    if score >= 80:
-        signal = "A+"
-    elif score >= 70:
-        signal = "Momentum"
-    elif score >= 60:
-        signal = "Breakout"
-
-    bias = "Bullish" if change_pct >= 0 else "Bearish"
-    return round(score, 2), signal, bias, round(change_pct, 2), round(range_pct, 2), above_vwap, breakout, round(dollar_vol_m, 2)
-
-
-@st.cache_data(ttl=POLL_SECONDS, show_spinner=False)
-def fetch_dashboard_data(api_key: str, stocks: tuple[str, ...], forex: tuple[str, ...]):
-    results: list[dict] = []
-    errors: list[str] = []
-    diagnostics: list[str] = []
-
-    if not api_key:
-        errors.append("POLYGON_API_KEY is missing.")
-        return {
-            "rows": results,
-            "errors": errors,
-            "diagnostics": diagnostics,
-            "updated": None,
-            "status": "error",
-        }
-
-    session = requests.Session()
-    session.headers.update({"User-Agent": "trading-dashboard/1.0"})
-
-    for symbol in stocks:
-        url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/prev?adjusted=true&apiKey={api_key}"
-        try:
-            response = session.get(url, timeout=15)
-            payload = response.json()
-        except Exception as exc:
-            errors.append(f"Stock {symbol}: request failed - {exc}")
-            continue
-
-        if response.status_code != 200:
-            errors.append(f"Stock {symbol}: HTTP {response.status_code} - {payload}")
-            continue
-
-        if not payload.get("results"):
-            diagnostics.append(f"Stock {symbol}: no results returned.")
-            continue
-
-        row = payload["results"][0]
-        price = float(row.get("c") or 0)
-        open_price = float(row.get("o") or 0)
-        high = float(row.get("h") or 0)
-        low = float(row.get("l") or 0)
-        volume = float(row.get("v") or 0)
-
-        if not price or not open_price:
-            diagnostics.append(f"Stock {symbol}: incomplete result payload.")
-            continue
-
-        score, signal, bias, change_pct, range_pct, _, _, _ = score_row(price, open_price, high, low, volume)
-        results.append({
-            "asset": "Stock",
-            "symbol": symbol,
-            "price": round(price, 2),
-            "change_pct": change_pct,
-            "rvol": 1.2,
-            "range_pct": range_pct,
-            "score": score,
-            "signal": signal,
-            "bias": bias,
-            "updated": datetime.now().strftime("%H:%M:%S"),
-        })
-
-    # Forex is optional. We keep it diagnostic-friendly and non-fatal.
-    for symbol in forex:
-        pair = symbol.replace("C:", "")
-        url = f"https://api.polygon.io/v1/conversion/{pair}?amount=1&precision=6&apiKey={api_key}"
-        try:
-            response = session.get(url, timeout=15)
-            payload = response.json()
-        except Exception as exc:
-            errors.append(f"Forex {symbol}: request failed - {exc}")
-            continue
-
-        if response.status_code != 200:
-            diagnostics.append(f"Forex {symbol}: HTTP {response.status_code} - skipped.")
-            continue
-
-        if "converted" not in payload:
-            diagnostics.append(f"Forex {symbol}: no converted value returned.")
-            continue
-
-        price = float(payload["converted"])
-        score = 51.0
-        signal = "Watch"
-        if score >= 80:
-            signal = "A+"
-        elif score >= 70:
-            signal = "Momentum"
-        elif score >= 60:
-            signal = "Breakout"
-
-        results.append({
-            "asset": "Forex",
-            "symbol": pair,
-            "price": round(price, 5),
-            "change_pct": 0.5,
-            "rvol": 1.1,
-            "range_pct": 0.8,
-            "score": score,
-            "signal": signal,
-            "bias": "Bullish",
-            "updated": datetime.now().strftime("%H:%M:%S"),
-        })
-
-    results = sorted(results, key=lambda x: x["score"], reverse=True)
-    status = "running" if results else ("error" if errors else "waiting")
-    return {
-        "rows": results,
-        "errors": errors,
-        "diagnostics": diagnostics,
-        "updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "status": status,
-    }
-
-
-st.title("Trading Dashboard")
-st.caption("Render-safe scanner: direct polling on rerun, no background thread, visible diagnostics")
-
-left, right = st.columns([1, 1])
+left, right = st.columns([1, 3])
 with left:
-    if st.button("Force refresh now"):
-        fetch_dashboard_data.clear()
+    if st.button("Refresh market data", use_container_width=True):
+        cached_market_rows.clear()
         st.rerun()
 with right:
-    st.write(f"Auto refresh cache TTL: {POLL_SECONDS}s")
+    st.write(
+        f"Mode: {settings.trading_mode.upper()} | "
+        f"Forex: {settings.forex_execution_broker.upper()} | "
+        f"Stocks: {settings.stock_execution_broker.upper()} | "
+        f"Crypto: {settings.crypto_execution_broker.upper()} | "
+        f"Poll TTL: {settings.poll_seconds}s"
+    )
 
-snapshot = fetch_dashboard_data(POLYGON_API_KEY, tuple(POLYGON_STOCKS), tuple(POLYGON_FOREX))
-rows = snapshot["rows"]
-errors = snapshot["errors"]
-diagnostics = snapshot["diagnostics"]
-status = snapshot["status"]
-last_update = snapshot["updated"]
+rows, fetch_errors = cached_market_rows()
+st.session_state.errors = fetch_errors + st.session_state.errors
+tradable = tradable_rows(rows, min_score=70)
+rows_df = pd.DataFrame(rows)
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Scanner Status", status.title())
-c2.metric("Last Update", last_update or "Waiting")
-c3.metric("Alert Threshold", f"{ALERT_THRESHOLD:.0f}")
-c4.metric("Rows Returned", str(len(rows)))
+alpaca_account = alpaca.get_account()
+oanda_account = oanda.get_account() if settings.trading_mode != "paper" else {"broker": "oanda", "status": "paper_mode"}
 
-with st.expander("Environment check", expanded=(status != "running")):
-    st.write({
-        "POLYGON_API_KEY_present": bool(POLYGON_API_KEY),
-        "POLYGON_STOCKS": POLYGON_STOCKS,
-        "POLYGON_FOREX": POLYGON_FOREX,
-        "POLL_SECONDS": POLL_SECONDS,
-        "ALERT_THRESHOLD": ALERT_THRESHOLD,
-        "ALERT_COOLDOWN_MINUTES": ALERT_COOLDOWN_MINUTES,
-    })
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Rows", len(rows))
+c2.metric("Tradable setups", len(tradable))
+c3.metric("Paper positions", len(st.session_state.paper_broker.get_positions()))
+c4.metric("Daily PnL %", f"{st.session_state.realized_daily_pnl_pct*100:.2f}%")
+c5.metric("Mode", settings.trading_mode.upper())
 
-if rows:
-    df = pd.DataFrame(rows)
+with st.expander("Broker readiness"):
+    readiness = pd.DataFrame([
+        {"item": "Alpaca configured", "value": alpaca.configured()},
+        {"item": "OANDA configured", "value": oanda.configured()},
+        {"item": "Polygon configured", "value": bool(settings.polygon_api_key)},
+        {"item": "Forex live capable", "value": settings.trading_mode != "paper" and oanda.configured()},
+        {"item": "Stock live capable", "value": settings.trading_mode != "paper" and alpaca.configured()},
+        {"item": "Crypto live capable", "value": settings.trading_mode != "paper" and alpaca.configured()},
+        {"item": "Kill switch", "value": settings.kill_switch},
+    ])
+    st.dataframe(readiness, use_container_width=True, hide_index=True)
+    st.write("Alpaca account:")
+    st.json(alpaca_account)
+    st.write("OANDA account:")
+    st.json(oanda_account)
+
+st.markdown("### Market opportunities")
+if rows_df.empty:
+    rows_df = pd.DataFrame(columns=["asset_class", "symbol", "price", "change_pct", "score", "signal", "bias", "updated"])
+st.dataframe(rows_df, use_container_width=True, hide_index=True)
+
+st.markdown("### Trade launcher")
+a, b, c, d, e = st.columns(5)
+asset_class = a.selectbox("Asset class", ["forex", "stock", "crypto"])
+symbol_options = {
+    "stock": settings.stock_symbols,
+    "forex": settings.forex_symbols,
+    "crypto": settings.crypto_symbols,
+}
+symbol = b.selectbox("Symbol", symbol_options[asset_class])
+side = c.selectbox("Side", ["buy", "sell"])
+notional = d.number_input("Notional USD / proxy", min_value=10.0, value=float(settings.default_order_size_usd), step=10.0)
+qty = e.number_input("Units / Qty (optional)", min_value=0.0, value=0.0, step=1.0)
+
+if st.button("Submit order", type="primary"):
+    order = OrderRequest(
+        asset_class=asset_class,
+        symbol=symbol,
+        side=side,
+        notional_usd=float(notional),
+        qty=float(qty) if qty > 0 else None,
+    )
+    broker = get_broker(asset_class)
+    open_positions = st.session_state.paper_broker.get_positions()
+    try:
+        if settings.trading_mode != "paper":
+            if asset_class == "forex" and oanda.configured():
+                open_positions = oanda.get_positions()
+            elif asset_class in {"stock", "crypto"} and alpaca.configured():
+                open_positions = alpaca.get_positions()
+    except Exception:
+        pass
+
+    ok, message = check_risk(order, open_positions, st.session_state.realized_daily_pnl_pct)
+    if not ok:
+        st.error(message)
+    else:
+        result = broker.place_order(order)
+        st.session_state.orders.insert(0, {
+            "ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "asset_class": asset_class,
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "notional_usd": notional,
+            "broker": result.broker,
+            "status": result.status,
+            "message": result.message,
+        })
+        if result.ok:
+            st.success(f"Order accepted by {result.broker}: {result.message}")
+        else:
+            st.warning(f"{result.broker} response: {result.message}")
+
+st.markdown("### One-click trade from top setups")
+if tradable:
+    for row in tradable[:5]:
+        cols = st.columns([2, 1, 1, 1])
+        cols[0].write(f"{row['symbol']} ({row['asset_class']}) — {row['signal']} — score {row['score']}")
+        cols[1].write(row["bias"])
+        cols[2].write(f"{row['price']}")
+        action = trade_side_from_row(row)
+        if cols[3].button(f"{action.title()} {row['symbol']}", key=f"quick-{row['asset_class']}-{row['symbol']}"):
+            order = OrderRequest(
+                asset_class=row["asset_class"],
+                symbol=row["symbol"],
+                side=action,
+                notional_usd=float(settings.default_order_size_usd),
+            )
+            broker = get_broker(row["asset_class"])
+            result = broker.place_order(order)
+            st.session_state.orders.insert(0, {
+                "ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                "asset_class": row["asset_class"],
+                "symbol": row["symbol"],
+                "side": action,
+                "qty": "",
+                "notional_usd": settings.default_order_size_usd,
+                "broker": result.broker,
+                "status": result.status,
+                "message": result.message,
+            })
+            if result.ok:
+                st.success(f"{row['symbol']}: order submitted via {result.broker}.")
+            else:
+                st.warning(f"{row['symbol']}: {result.message}")
 else:
-    df = pd.DataFrame(columns=DEFAULT_COLUMNS)
+    st.info("No setups above the current tradable threshold.")
 
-st.markdown("### Filters")
-f1, f2, f3 = st.columns(3)
-asset_options = sorted(df["asset"].dropna().unique().tolist()) if not df.empty else ["Stock", "Forex"]
-signal_options = ["Watch", "Breakout", "Momentum", "A+"]
-asset_filter = f1.multiselect("Asset classes", asset_options, default=asset_options)
-min_score = f2.slider("Minimum score", 0, 100, 0)
-signals = f3.multiselect("Signals", signal_options, default=signal_options)
+st.markdown("### Orders")
+orders_df = pd.DataFrame(st.session_state.orders)
+if orders_df.empty:
+    orders_df = pd.DataFrame(columns=["ts", "asset_class", "symbol", "side", "qty", "notional_usd", "broker", "status", "message"])
+st.dataframe(orders_df, use_container_width=True, hide_index=True)
 
-filtered = df[
-    df["asset"].isin(asset_filter)
-    & (df["score"] >= min_score)
-    & (df["signal"].isin(signals))
-] if not df.empty else df
+st.markdown("### Paper positions")
+paper_df = pd.DataFrame(st.session_state.paper_broker.get_positions())
+if paper_df.empty:
+    paper_df = pd.DataFrame(columns=["symbol", "qty", "asset_class"])
+st.dataframe(paper_df, use_container_width=True, hide_index=True)
 
-st.markdown("### Ranked opportunities")
-st.dataframe(filtered, use_container_width=True, hide_index=True)
+if settings.trading_mode != "paper":
+    st.markdown("### Live positions")
+    live_stock_crypto = pd.DataFrame(alpaca.get_positions())
+    live_forex = pd.DataFrame(oanda.get_positions()) if oanda.configured() else pd.DataFrame()
+    if live_stock_crypto.empty:
+        live_stock_crypto = pd.DataFrame(columns=["symbol", "asset_class", "qty", "side", "market_value", "unrealized_pl"])
+    if live_forex.empty:
+        live_forex = pd.DataFrame(columns=["symbol", "asset_class", "long_units", "short_units", "pl"])
+    st.write("Alpaca positions")
+    st.dataframe(live_stock_crypto, use_container_width=True, hide_index=True)
+    st.write("OANDA positions")
+    st.dataframe(live_forex, use_container_width=True, hide_index=True)
 
-if diagnostics:
+if st.session_state.errors:
     st.markdown("### Diagnostics")
-    for item in diagnostics:
-        st.code(item)
-
-if errors:
-    st.markdown("### Errors")
-    for item in errors:
-        st.code(item)
-
-if not rows and not errors:
-    st.warning("No rows were returned. Use 'Environment check' and 'Force refresh now' to verify your Polygon key and current symbols.")
+    seen = []
+    for err in st.session_state.errors:
+        if err not in seen:
+            st.code(err)
+            seen.append(err)
+        if len(seen) >= 10:
+            break
 
 st.markdown("### Notes")
-st.write("- This version removes the background thread entirely.")
-st.write("- Data is fetched directly during reruns, which avoids Streamlit thread reliability issues.")
-st.write("- Minimum score defaults to 0 so the table will show any valid rows immediately.")
-
-@st.fragment(run_every=POLL_SECONDS)
-def auto_refresh_fragment():
-    st.caption(f"Auto-refresh active every {POLL_SECONDS} seconds.")
-
-auto_refresh_fragment()
+st.write("- Forex execution routes to OANDA.")
+st.write("- Stock and crypto execution route to Alpaca.")
+st.write("- Stocks can also use Polygon snapshots for scanner rows when POLYGON_API_KEY is set.")
+st.write("- Start in paper mode even after all credentials are entered.")
