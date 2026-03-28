@@ -127,7 +127,12 @@ def scan_binance():
     if not BINANCE_SYMBOLS:
         return rows
 
-    tickers = safe_get_json("https://api.binance.com/api/v3/ticker/24hr")
+    try:
+        tickers = safe_get_json("https://api.binance.com/api/v3/ticker/24hr")
+    except Exception as e:
+        log_error(f"Binance blocked: {e}")
+        return rows  # <-- THIS IS THE FIX
+
     ticker_map = {t["symbol"]: t for t in tickers if t.get("symbol") in BINANCE_SYMBOLS}
 
     for symbol in BINANCE_SYMBOLS:
@@ -135,35 +140,40 @@ def scan_binance():
         if not t:
             continue
 
-        price = float(t["lastPrice"])
-        change_pct = float(t["priceChangePercent"])
-        quote_volume = float(t["quoteVolume"])
-        high = float(t["highPrice"])
-        low = float(t["lowPrice"])
-        weighted_avg = float(t["weightedAvgPrice"]) if float(t["weightedAvgPrice"]) else price
-        range_pct = ((high - low) / price) * 100 if price else 0
-        rvol = clamp(quote_volume / 1_000_000_000, 0.5, 3.0)
-        above_vwap = price >= weighted_avg
-        breakout = price >= high * 0.998 or price <= low * 1.002
+        try:
+            price = float(t["lastPrice"])
+            change_pct = float(t["priceChangePercent"])
+            quote_volume = float(t["quoteVolume"])
+            high = float(t["highPrice"])
+            low = float(t["lowPrice"])
+            weighted_avg = float(t["weightedAvgPrice"]) if float(t["weightedAvgPrice"]) else price
 
-        score, signal, direction = score_row(
-            "Crypto", symbol, price, change_pct, rvol, range_pct, above_vwap, breakout, quote_volume / 1_000_000
-        )
+            range_pct = ((high - low) / price) * 100 if price else 0
+            rvol = clamp(quote_volume / 1_000_000_000, 0.5, 3.0)
+            above_vwap = price >= weighted_avg
+            breakout = price >= high * 0.998 or price <= low * 1.002
 
-        rows.append({
-            "asset": "Crypto",
-            "symbol": symbol,
-            "price": round(price, 4) if price < 100 else round(price, 2),
-            "change_pct": round(change_pct, 2),
-            "rvol": round(rvol, 2),
-            "range_pct": round(range_pct, 2),
-            "score": score,
-            "signal": signal,
-            "bias": direction,
-            "updated": datetime.now().strftime("%H:%M:%S"),
-        })
+            score, signal, direction = score_row(
+                "Crypto", symbol, price, change_pct, rvol, range_pct, above_vwap, breakout, quote_volume / 1_000_000
+            )
+
+            rows.append({
+                "asset": "Crypto",
+                "symbol": symbol,
+                "price": round(price, 4) if price < 100 else round(price, 2),
+                "change_pct": round(change_pct, 2),
+                "rvol": round(rvol, 2),
+                "range_pct": round(range_pct, 2),
+                "score": score,
+                "signal": signal,
+                "bias": direction,
+                "updated": datetime.now().strftime("%H:%M:%S"),
+            })
+
+        except Exception as e:
+            log_error(f"Crypto {symbol}: {e}")
+
     return rows
-
 def scan_polygon_stocks():
     rows = []
     if not (POLYGON_API_KEY and POLYGON_STOCKS):
