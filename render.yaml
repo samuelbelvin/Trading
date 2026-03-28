@@ -3,19 +3,27 @@ services:
     name: trading-dashboard
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run app_polygon_only.py --server.address 0.0.0.0 --server.port $PORT
+    startCommand: streamlit run app.py --server.address 0.0.0.0 --server.port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
       - key: POLYGON_API_KEY
         sync: false
       - key: POLYGON_STOCKS
-        value: AAPL,NVDA,TSLA
+        value: AAPL,NVDA,TSLA,AMD,META,MSFT
       - key: POLYGON_FOREX
-        value: C:EURUSD
+        value: C:EURUSD,C:GBPUSD,C:USDJPY
       - key: POLL_SECONDS
         value: "15"
       - key: ALERT_THRESHOLD
-        value: "50"
+        value: "70"
       - key: ALERT_COOLDOWN_MINUTES
         value: "20"
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM
+        sync: false
+      - key: TWILIO_TO
+        sync: false
