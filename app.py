@@ -52,9 +52,14 @@ def log_error(msg: str):
         state["errors"] = ([f"{datetime.now().strftime('%H:%M:%S')} - {msg}"] + state["errors"])[:10]
 
 def safe_get_json(url: str, timeout: int = 12):
-    r = requests.get(url, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.get(url, timeout=timeout)
+        if r.status_code != 200:
+            raise Exception(f"{r.status_code} error")
+        return r.json()
+    except Exception as e:
+        log_error(f"Request failed: {url} | {e}")
+        return None 
 
 def send_sms(message: str):
     if not twilio_client:
@@ -182,6 +187,8 @@ def scan_polygon_stocks():
     for symbol in POLYGON_STOCKS:
         try:
             snap = safe_get_json(f"https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}?apiKey={POLYGON_API_KEY}")
+            if not snap:
+                continue
             ticker = snap.get("ticker", {})
             day = ticker.get("day", {})
             prev = ticker.get("prevDay", {})
@@ -233,6 +240,8 @@ def scan_polygon_forex():
     for symbol in POLYGON_FOREX:
         try:
             snap = safe_get_json(f"https://api.polygon.io/v2/snapshot/locale/global/markets/forex/tickers/{symbol}?apiKey={POLYGON_API_KEY}")
+            if not snap:
+                continue
             ticker = snap.get("ticker", {})
             day = ticker.get("day", {})
             prev = ticker.get("prevDay", {})
@@ -278,9 +287,20 @@ def scanner_loop():
     while True:
         try:
             rows = []
-            rows.extend(scan_binance())
-            rows.extend(scan_polygon_stocks())
-            rows.extend(scan_polygon_forex())
+            try:
+    rows.extend(scan_binance())
+except Exception as e:
+    log_error(f"binance loop: {e}")
+
+try:
+    rows.extend(scan_polygon_stocks())
+except Exception as e:
+    log_error(f"stocks loop: {e}")
+
+try:
+    rows.extend(scan_polygon_forex())
+except Exception as e:
+    log_error(f"forex loop: {e}")
 
             rows = sorted(rows, key=lambda x: x["score"], reverse=True)
 
