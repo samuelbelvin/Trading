@@ -287,7 +287,8 @@ def scanner_loop():
     while True:
         try:
             rows = []
-            try:
+
+try:
     rows.extend(scan_binance())
 except Exception as e:
     log_error(f"binance loop: {e}")
@@ -301,36 +302,6 @@ try:
     rows.extend(scan_polygon_forex())
 except Exception as e:
     log_error(f"forex loop: {e}")
-
-            rows = sorted(rows, key=lambda x: x["score"], reverse=True)
-
-            for row in rows:
-                update_score(row["symbol"], row["score"])
-                if should_alert(row["symbol"], row["score"], row["signal"]):
-                    msg = (
-                        f"{row['signal']} alert\n"
-                        f"{row['symbol']} ({row['asset']})\n"
-                        f"Score: {row['score']}\n"
-                        f"Price: {row['price']}\n"
-                        f"Change: {row['change_pct']}%\n"
-                        f"Bias: {row['bias']}"
-                    )
-                    ok, detail = send_sms(msg)
-                    if ok:
-                        mark_alert(row["symbol"], row["score"])
-                    else:
-                        log_error(f"SMS {row['symbol']}: {detail}")
-
-            with state_lock:
-                state["rows"] = rows
-                state["last_update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                state["status"] = "running"
-        except Exception as e:
-            log_error(f"scanner: {e}")
-            with state_lock:
-                state["status"] = "error"
-
-        time.sleep(POLL_SECONDS)
 
 def ensure_thread():
     with state_lock:
