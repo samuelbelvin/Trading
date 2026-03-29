@@ -1,5 +1,3 @@
-
-import math
 import os
 from datetime import datetime, timezone
 
@@ -8,7 +6,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-st.set_page_config(page_title="Forex + Crypto Opportunity Dashboard", layout="wide")
+st.set_page_config(page_title="Most Likely Profitable Pairs Dashboard", layout="wide")
 
 DEFAULT_FOREX = "EURUSD=X,GBPUSD=X,USDJPY=X,AUDUSD=X,USDCAD=X"
 DEFAULT_CRYPTO = "BTC-USD,ETH-USD,SOL-USD,XRP-USD,ADA-USD"
@@ -19,8 +17,10 @@ LOOKBACK_PERIOD = os.getenv("LOOKBACK_PERIOD", "5d")
 INTERVAL = os.getenv("INTERVAL", "15m")
 AUTO_REFRESH_SECONDS = max(60, int(os.getenv("AUTO_REFRESH_SECONDS", "300")))
 
+
 def clamp(val: float, low: float, high: float) -> float:
     return max(low, min(high, val))
+
 
 def rsi(series: pd.Series, period: int = 14) -> float:
     delta = series.diff()
@@ -31,10 +31,12 @@ def rsi(series: pd.Series, period: int = 14) -> float:
     value = rsi_series.iloc[-1]
     return float(value) if pd.notna(value) else 50.0
 
+
 def normalize_symbol(symbol: str) -> str:
     if symbol.endswith("=X"):
         return symbol.replace("=X", "")
-    return symbol.replace("-USD", "/USD")
+    return symbol
+
 
 def fetch_symbol_frame(symbol: str, period: str, interval: str) -> pd.DataFrame:
     df = yf.download(
@@ -47,36 +49,45 @@ def fetch_symbol_frame(symbol: str, period: str, interval: str) -> pd.DataFrame:
     )
     if df is None or df.empty:
         return pd.DataFrame()
+
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [c[0] for c in df.columns]
-    cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-    return df[cols].dropna().copy()
 
-def score_pair(asset_class: str, symbol: str, df: pd.DataFrame) -> dict | None:
+    cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+    if not cols:
+        return pd.DataFrame()
+
+    df = df[cols].dropna().copy()
+    return df
+
+
+def score_pair(asset_class: str, symbol: str, df: pd.DataFrame):
     if df.empty or len(df) < 30:
         return None
 
     close = df["Close"].astype(float)
     high = df["High"].astype(float)
     low = df["Low"].astype(float)
-    open_ = df["Open"].astype(float)
     volume = df["Volume"].astype(float) if "Volume" in df.columns else pd.Series(index=df.index, dtype=float)
 
     last_price = float(close.iloc[-1])
-    prev_price = float(close.iloc[-2])
 
-    ret_1 = ((close.iloc[-1] / close.iloc[-5]) - 1) * 100 if len(close) >= 5 else 0.0
-    ret_4h = ((close.iloc[-1] / close.iloc[-17]) - 1) * 100 if len(close) >= 17 else ret_1
+    ret_short = ((close.iloc[-1] / close.iloc[-5]) - 1) * 100 if len(close) >= 5 else 0.0
+    ret_4h = ((close.iloc[-1] / close.iloc[-17]) - 1) * 100 if len(close) >= 17 else ret_short
     ret_day = ((close.iloc[-1] / close.iloc[0]) - 1) * 100
 
     ema_9 = close.ewm(span=9).mean().iloc[-1]
     ema_21 = close.ewm(span=21).mean().iloc[-1]
 
-    true_range = pd.concat([
-        (high - low),
-        (high - close.shift(1)).abs(),
-        (low - close.shift(1)).abs()
-    ], axis=1).max(axis=1)
+    true_range = pd.concat(
+        [
+            (high - low),
+            (high - close.shift(1)).abs(),
+            (low - close.shift(1)).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
     atr_pct = float((true_range.rolling(14).mean().iloc[-1] / last_price) * 100) if last_price else 0.0
 
     breakout_window = 20
@@ -86,10 +97,15 @@ def score_pair(asset_class: str, symbol: str, df: pd.DataFrame) -> dict | None:
     breakout_up = last_price >= recent_high * 0.998
     breakout_down = last_price <= recent_low * 1.002
 
-    momentum_bias = "Bullish" if ema_9 > ema_21 and last_price > ema_9 else "Bearish" if ema_9 < ema_21 and last_price < ema_9 else "Mixed"
+    if ema_9 > ema_21 and last_price > ema_9:
+        momentum_bias = "Bullish"
+    elif ema_9 < ema_21 and last_price < ema_9:
+        momentum_bias = "Bearish"
+    else:
+        momentum_bias = "Mixed"
 
     current_rsi = rsi(close, 14)
-    rsi_score = 0.0
+
     if momentum_bias == "Bullish":
         rsi_score = clamp(70 - abs(62 - current_rsi), 0, 12)
     elif momentum_bias == "Bearish":
@@ -101,7 +117,10 @@ def score_pair(asset_class: str, symbol: str, df: pd.DataFrame) -> dict | None:
     trend_score = clamp(abs(ret_4h) * 2.5, 0, 20)
     day_score = clamp(abs(ret_day) * 1.2, 0, 15)
     breakout_score = 15 if (breakout_up or breakout_down) else 0
-    alignment_score = 12 if ((ema_9 > ema_21 and ret_1 > 0 and ret_4h > 0) or (ema_9 < ema_21 and ret_1 < 0 and ret_4h < 0)) else 0
+    alignment_score = 12 if (
+        (ema_9 > ema_21 and ret_short > 0 and ret_4h > 0)
+        or (ema_9 < ema_21 and ret_short < 0 and ret_4h < 0)
+    ) else 0
 
     volume_score = 0.0
     volume_ratio = np.nan
@@ -111,7 +130,15 @@ def score_pair(asset_class: str, symbol: str, df: pd.DataFrame) -> dict | None:
             volume_ratio = float(volume.iloc[-1] / vol_ma)
             volume_score = clamp(volume_ratio * 6, 0, 18)
 
-    raw_score = trend_score + day_score + volatility_score + breakout_score + alignment_score + rsi_score + volume_score
+    raw_score = (
+        trend_score
+        + day_score
+        + volatility_score
+        + breakout_score
+        + alignment_score
+        + rsi_score
+        + volume_score
+    )
     score = round(clamp(raw_score, 0, 100), 2)
 
     setup = "Watch"
@@ -122,7 +149,12 @@ def score_pair(asset_class: str, symbol: str, df: pd.DataFrame) -> dict | None:
     elif score >= 55:
         setup = "Developing"
 
-    direction = "Long" if momentum_bias == "Bullish" else "Short" if momentum_bias == "Bearish" else "Neutral"
+    if momentum_bias == "Bullish":
+        direction = "Long"
+    elif momentum_bias == "Bearish":
+        direction = "Short"
+    else:
+        direction = "Neutral"
 
     return {
         "asset_class": asset_class,
@@ -134,7 +166,7 @@ def score_pair(asset_class: str, symbol: str, df: pd.DataFrame) -> dict | None:
         "bias": momentum_bias,
         "rsi": round(float(current_rsi), 2),
         "atr_pct": round(float(atr_pct), 2),
-        "ret_1h_pct": round(float(ret_1), 2),
+        "ret_short_pct": round(float(ret_short), 2),
         "ret_4h_pct": round(float(ret_4h), 2),
         "ret_day_pct": round(float(ret_day), 2),
         "breakout": "Up" if breakout_up else "Down" if breakout_down else "No",
@@ -142,6 +174,7 @@ def score_pair(asset_class: str, symbol: str, df: pd.DataFrame) -> dict | None:
         "volume_ratio": round(float(volume_ratio), 2) if pd.notna(volume_ratio) else None,
         "updated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
     }
+
 
 @st.cache_data(ttl=AUTO_REFRESH_SECONDS, show_spinner=False)
 def build_rankings(forex_symbols: tuple[str, ...], crypto_symbols: tuple[str, ...], period: str, interval: str):
@@ -173,8 +206,9 @@ def build_rankings(forex_symbols: tuple[str, ...], crypto_symbols: tuple[str, ..
     rows = sorted(rows, key=lambda x: x["score"], reverse=True)
     return rows, errors
 
+
 st.title("Most Likely Profitable Pairs Dashboard")
-st.caption("Ranks forex and crypto pairs by trend, breakout pressure, volatility, and momentum alignment. This is a ranking model, not a guarantee of profitability.")
+st.caption("Ranks forex and crypto pairs by trend, breakout pressure, volatility, and momentum alignment.")
 
 top_left, top_right = st.columns([1, 3])
 with top_left:
@@ -188,11 +222,26 @@ rows, errors = build_rankings(tuple(FOREX_SYMBOLS), tuple(CRYPTO_SYMBOLS), LOOKB
 
 df = pd.DataFrame(rows)
 if df.empty:
-    df = pd.DataFrame(columns=[
-        "asset_class", "pair", "price", "score", "setup", "direction", "bias", "rsi",
-        "atr_pct", "ret_1h_pct", "ret_4h_pct", "ret_day_pct", "breakout", "ema9_vs_ema21",
-        "volume_ratio", "updated_utc"
-    ])
+    df = pd.DataFrame(
+        columns=[
+            "asset_class",
+            "pair",
+            "price",
+            "score",
+            "setup",
+            "direction",
+            "bias",
+            "rsi",
+            "atr_pct",
+            "ret_short_pct",
+            "ret_4h_pct",
+            "ret_day_pct",
+            "breakout",
+            "ema9_vs_ema21",
+            "volume_ratio",
+            "updated_utc",
+        ]
+    )
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Pairs ranked", len(df))
@@ -204,7 +253,11 @@ st.markdown("### Filters")
 f1, f2, f3 = st.columns(3)
 asset_filter = f1.multiselect("Asset classes", ["Forex", "Crypto"], default=["Forex", "Crypto"])
 min_score = f2.slider("Minimum score", 0, 100, 55)
-setup_filter = f3.multiselect("Setup strength", ["Developing", "Strong", "High Conviction"], default=["Developing", "Strong", "High Conviction"])
+setup_filter = f3.multiselect(
+    "Setup strength",
+    ["Developing", "Strong", "High Conviction"],
+    default=["Developing", "Strong", "High Conviction"],
+)
 
 filtered = df[
     df["asset_class"].isin(asset_filter)
@@ -225,7 +278,7 @@ if errors:
         st.code(err)
 
 st.markdown("### Model notes")
-st.write("- Forex and crypto are ranked separately in one table so you can compare the strongest current candidates.")
-st.write("- Score components emphasize recent trend alignment, breakout proximity, and tradable movement rather than trying to predict exact win rate.")
-st.write("- Crypto gets an extra volume-ratio component when volume data is available.")
-st.write("- Use this as a shortlist generator for manual review, not as an automatic execution engine.")
+st.write("- Forex symbols must use Yahoo Finance format like EURUSD=X.")
+st.write("- Crypto symbols must use Yahoo Finance format like BTC-USD.")
+st.write("- Score emphasizes trend alignment, breakout proximity, volatility, and crypto volume confirmation.")
+st.write("- This is a ranking dashboard, not an execution engine.")
