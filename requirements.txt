@@ -1,0 +1,5 @@
+streamlit==1.44.1
+streamlit-autorefresh==1.0.1
+pandas==2.2.3
+requests==2.32.3
+twilio==9.4.6
