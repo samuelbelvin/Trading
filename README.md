@@ -1,19 +1,29 @@
 
-# Most Likely Profitable Pairs Dashboard
+# Fixed Symbol Version - Profitable Pairs Dashboard
 
-This version goes back to the original goal:
-a dashboard that ranks forex and crypto pairs by current opportunity quality.
+This version corrects the symbol format issue.
 
-## What it does
-- pulls forex and crypto market data with yfinance
-- scores each pair using momentum, breakout pressure, volatility, and trend alignment
-- ranks pairs from most attractive to least attractive
-- lets you filter by score and setup strength
+## ✅ Correct Formats Used
 
-## Replace these files
-- app.py
+Forex (Yahoo Finance):
+- EURUSD=X
+- GBPUSD=X
+- USDJPY=X
+
+Crypto:
+- BTC-USD
+- ETH-USD
+- SOL-USD
+
+## 🔧 What to Replace
 - render.yaml
-- requirements.txt
+- .env (or environment variables in Render)
 
-## Notes
-This is a ranking dashboard, not an auto-trader.
+## ⚠️ Why This Matters
+yfinance requires Yahoo Finance symbol formats — NOT broker formats like EUR_USD or BTC/USD.
+
+## Result
+After deploying this version:
+- No more "Not enough data"
+- Rankings will populate
+- Dashboard becomes fully functional
