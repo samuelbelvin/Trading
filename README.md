@@ -1,29 +1,18 @@
 
-# Fixed Symbol Version - Profitable Pairs Dashboard
+# Real Data Forex + Crypto Pairs Dashboard
 
-This version corrects the symbol format issue.
+Data sources:
+- Forex: OANDA instrument candles
+- Crypto: Binance public market-data klines
 
-## ✅ Correct Formats Used
+Required env vars:
+- OANDA_API_KEY
+- OANDA_ACCOUNT_ID
 
-Forex (Yahoo Finance):
-- EURUSD=X
-- GBPUSD=X
-- USDJPY=X
-
-Crypto:
-- BTC-USD
-- ETH-USD
-- SOL-USD
-
-## 🔧 What to Replace
-- render.yaml
-- .env (or environment variables in Render)
-
-## ⚠️ Why This Matters
-yfinance requires Yahoo Finance symbol formats — NOT broker formats like EUR_USD or BTC/USD.
-
-## Result
-After deploying this version:
-- No more "Not enough data"
-- Rankings will populate
-- Dashboard becomes fully functional
+Defaults:
+- FOREX_SYMBOLS=EUR_USD,GBP_USD,USD_JPY,AUD_USD,USD_CAD
+- CRYPTO_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,ADAUSDT
+- FOREX_GRANULARITY=M15
+- CRYPTO_INTERVAL=15m
+- CANDLE_COUNT=120
+- AUTO_REFRESH_SECONDS=60

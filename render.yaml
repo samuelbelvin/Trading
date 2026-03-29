@@ -9,12 +9,20 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.11
       - key: FOREX_SYMBOLS
-        value: EURUSD=X,GBPUSD=X,USDJPY=X,AUDUSD=X,USDCAD=X
+        value: EUR_USD,GBP_USD,USD_JPY,AUD_USD,USD_CAD
       - key: CRYPTO_SYMBOLS
-        value: BTC-USD,ETH-USD,SOL-USD,XRP-USD,ADA-USD
-      - key: LOOKBACK_PERIOD
-        value: 5d
-      - key: INTERVAL
+        value: BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,ADAUSDT
+      - key: FOREX_GRANULARITY
+        value: M15
+      - key: CRYPTO_INTERVAL
         value: 15m
+      - key: CANDLE_COUNT
+        value: "120"
       - key: AUTO_REFRESH_SECONDS
-        value: "300"
+        value: "60"
+      - key: OANDA_ENV
+        value: practice
+      - key: OANDA_API_KEY
+        sync: false
+      - key: OANDA_ACCOUNT_ID
+        sync: false
