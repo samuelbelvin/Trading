@@ -1,51 +1,20 @@
+
 services:
   - type: web
-    name: trading-dashboard
+    name: profitable-pairs-dashboard
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run app.py --server.address 0.0.0.0 --server.port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
-      - key: TRADING_MODE
-        value: paper
-      - key: FOREX_EXECUTION_BROKER
-        value: oanda
-      - key: STOCK_EXECUTION_BROKER
-        value: alpaca
-      - key: CRYPTO_EXECUTION_BROKER
-        value: alpaca
-      - key: MAX_RISK_PER_TRADE_PCT
-        value: "0.005"
-      - key: MAX_DAILY_LOSS_PCT
-        value: "0.02"
-      - key: MAX_OPEN_POSITIONS
-        value: "5"
-      - key: DEFAULT_ORDER_SIZE_USD
-        value: "1000"
-      - key: KILL_SWITCH
-        value: "false"
-      - key: STOCK_SYMBOLS
-        value: AAPL,NVDA,TSLA,AMD,META,MSFT
       - key: FOREX_SYMBOLS
-        value: EUR_USD,GBP_USD,USD_JPY
+        value: EURUSD=X,GBPUSD=X,USDJPY=X,AUDUSD=X,USDCAD=X
       - key: CRYPTO_SYMBOLS
-        value: BTC/USD,ETH/USD,SOL/USD
-      - key: POLL_SECONDS
-        value: "30"
-      - key: POLYGON_API_KEY
-        sync: false
-      - key: ALPACA_API_KEY
-        sync: false
-      - key: ALPACA_API_SECRET
-        sync: false
-      - key: ALPACA_BASE_URL
-        value: https://paper-api.alpaca.markets
-      - key: ALPACA_DATA_BASE_URL
-        value: https://data.alpaca.markets
-      - key: OANDA_API_KEY
-        sync: false
-      - key: OANDA_ACCOUNT_ID
-        sync: false
-      - key: OANDA_ENV
-        value: practice
+        value: BTC-USD,ETH-USD,SOL-USD,XRP-USD,ADA-USD
+      - key: LOOKBACK_PERIOD
+        value: 5d
+      - key: INTERVAL
+        value: 15m
+      - key: AUTO_REFRESH_SECONDS
+        value: "300"
